@@ -12,3 +12,6 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "openenv>=0.1.13",
 ]
+
+[project.scripts]
+serve = "server.app:app"
