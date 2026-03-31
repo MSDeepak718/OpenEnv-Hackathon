@@ -1,0 +1,11 @@
+# Ignore build artifacts and large dirs from Docker build context
+__pycache__/
+*.py[oc]
+*.egg-info/
+.venv/
+.git/
+.gitignore
+.env
+*.md
+uv.lock
+.python-version

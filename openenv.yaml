@@ -1,0 +1,13 @@
+name: moderation-env
+description: AI Content Moderation Environment
+version: 1.0
+
+endpoints:
+  reset: /reset
+  step: /step
+  state: /state
+
+models:
+  observation: Observation
+  action: Action
+  reward: Reward
