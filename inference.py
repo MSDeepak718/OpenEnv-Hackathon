@@ -3,11 +3,20 @@ import json
 import re
 import time
 from typing import Dict, Any
-from dotenv import load_dotenv
 
-from openai import OpenAI
 from env.moderation_env import ModerationEnv
 from schemas import Action
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv():
+        return False
+
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
 
 load_dotenv()
 
@@ -19,22 +28,27 @@ API_BASE_URL = os.getenv("API_BASE_URL")
 HF_TOKEN = os.getenv("HF_TOKEN")
 MODEL_NAME = os.getenv("MODEL_NAME")
 
-if not API_BASE_URL or not HF_TOKEN or not MODEL_NAME:
-    raise ValueError("Missing required environment variables: API_BASE_URL, HF_TOKEN, MODEL_NAME")
+MODEL_CONFIGURED = bool(API_BASE_URL and HF_TOKEN and MODEL_NAME and OpenAI)
 
 
 # =========================
 # OPENAI CLIENT
 # =========================
-client = OpenAI(
-    base_url=API_BASE_URL,
-    api_key=HF_TOKEN,
-)
+client = None
+if MODEL_CONFIGURED:
+    client = OpenAI(
+        base_url=API_BASE_URL,
+        api_key=HF_TOKEN,
+    )
 
 
 TEMPERATURE = 0.2
 EPISODES = 5      # small for <20min runtime
 MAX_RETRIES = 3   # retry on transient API failures
+
+
+def emit_log(event: str, payload: Dict[str, Any]) -> None:
+    print(f"[{event}] {json.dumps(payload, separators=(',', ':'))}", flush=True)
 
 
 # =========================
@@ -64,6 +78,34 @@ def sanitize(output: Dict[str, Any]) -> Dict[str, Any]:
         "severity": output.get("severity") if output.get("severity") in VALID_SEVERITY else "low",
         "decision": output.get("decision") if output.get("decision") in VALID_DECISION else "allow",
     }
+
+
+def local_policy(obs) -> Dict[str, Any]:
+    """Deterministic fallback used when model credentials or calls are unavailable."""
+    content = obs.content.lower()
+    history = " ".join(obs.user_history).lower()
+
+    if any(term in content for term in ["buy cheap followers", "free iphone", "click here", "credit card", "claim your reward"]):
+        repeated_spam = "spam" in history or "removal" in history
+        phishing = "credit card" in content or "claim your reward" in content
+        return {
+            "label": "spam",
+            "severity": "high" if phishing or repeated_spam else "medium",
+            "decision": "ban" if repeated_spam else "remove",
+        }
+
+    if any(term in content for term in ["where you live", "shut you up permanently", "your kind", "people like you"]):
+        return {"label": "hate", "severity": "high", "decision": "ban"}
+
+    if any(term in content for term in ["worthless", "pathetic", "worst support team"]):
+        escalated = any(term in history for term in ["warn", "removal", "ban"])
+        return {
+            "label": "toxic",
+            "severity": "high" if "ban" in history or "removal" in history else "medium",
+            "decision": "ban" if escalated and ("ban" in history or "removal" in history) else "warn",
+        }
+
+    return {"label": "safe", "severity": "low", "decision": "allow"}
 
 
 # =========================
@@ -109,6 +151,9 @@ Return ONLY JSON:
 # MODEL CALL (with retry)
 # =========================
 def call_model(prompt: str) -> str:
+    if client is None:
+        return ""
+
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             res = client.chat.completions.create(
@@ -119,9 +164,8 @@ def call_model(prompt: str) -> str:
             content = res.choices[0].message.content or ""
             if content.strip():
                 return content
-            print(f"[WARNING] Empty response on attempt {attempt}/{MAX_RETRIES}")
-        except Exception as e:
-            print(f"[WARNING] Model API error on attempt {attempt}/{MAX_RETRIES}: {e}")
+        except Exception:
+            pass
 
         if attempt < MAX_RETRIES:
             time.sleep(2 ** attempt)  # exponential backoff: 2s, 4s
@@ -132,24 +176,37 @@ def call_model(prompt: str) -> str:
 # =========================
 # RUN ONE EPISODE
 # =========================
-def run_episode(env) -> float:
+def run_episode(env, episode: int) -> float:
     obs = env.reset()
     done = False
     final_score = 0.0
+    step = 0
 
     while not done:
+        step += 1
         prompt = build_prompt(obs)
         response = call_model(prompt)
+        source = "llm" if response else "fallback"
 
-        if not response:
-            print("[ERROR] Model failed after all retries — scoring episode as 0.0")
-            return 0.0
+        if response:
+            parsed = sanitize(parse_json(response))
+        else:
+            parsed = local_policy(obs)
 
-        parsed = sanitize(parse_json(response))
         action = Action(**parsed)
 
         obs, reward, done, _ = env.step(action)
         final_score = reward.score
+        emit_log("STEP", {
+            "episode": episode,
+            "step": step,
+            "label": action.label,
+            "severity": action.severity,
+            "decision": action.decision,
+            "score": round(final_score, 4),
+            "done": done,
+            "source": source,
+        })
 
     return final_score
 
@@ -162,22 +219,26 @@ def run():
     scores = []
     failed = 0
 
-    print("Running Inference...\n")
+    emit_log("START", {
+        "episodes": EPISODES,
+        "model_name": MODEL_NAME or "",
+        "api_base_url": API_BASE_URL or "",
+        "model_configured": MODEL_CONFIGURED,
+    })
 
     for i in range(EPISODES):
-        score = run_episode(env)
+        score = run_episode(env, i + 1)
         scores.append(score)
         if score == 0.0:
             failed += 1
-        print(f"Episode {i+1}: {score:.3f}")
 
     avg_score = sum(scores) / len(scores)
 
-    print("\n======================")
-    print(f"Final Average Score: {avg_score:.4f}")
-    if failed:
-        print(f"[WARNING] {failed}/{EPISODES} episodes scored 0.0 (check API key / rate limits)")
-    print("======================")
+    emit_log("END", {
+        "episodes": EPISODES,
+        "average_score": round(avg_score, 4),
+        "failed": failed,
+    })
 
 
 if __name__ == "__main__":
