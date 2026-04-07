@@ -2,10 +2,10 @@ import os
 import json
 import re
 import time
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 
 from env.moderation_env import ModerationEnv
-from schemas import Action
+from models import Action
 
 try:
     from dotenv import load_dotenv
@@ -24,11 +24,11 @@ load_dotenv()
 # =========================
 # ENV VARIABLES
 # =========================
-API_BASE_URL = os.getenv("API_BASE_URL")
-HF_TOKEN = os.getenv("HF_TOKEN")
-MODEL_NAME = os.getenv("MODEL_NAME")
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+API_KEY = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("HF_TOKEN")
+MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("MODEL") or "Qwen/Qwen2.5-72B-Instruct"
 
-MODEL_CONFIGURED = bool(API_BASE_URL and HF_TOKEN and MODEL_NAME and OpenAI)
+MODEL_CONFIGURED = bool(API_BASE_URL and API_KEY and OpenAI)
 
 
 # =========================
@@ -38,17 +38,39 @@ client = None
 if MODEL_CONFIGURED:
     client = OpenAI(
         base_url=API_BASE_URL,
-        api_key=HF_TOKEN,
+        api_key=API_KEY,
     )
 
 
 TEMPERATURE = 0.2
-EPISODES = 5      # small for <20min runtime
+MAX_STEPS = 3
 MAX_RETRIES = 3   # retry on transient API failures
+TASK_NAME = os.getenv("TASK_NAME", "moderation")
+BENCHMARK = os.getenv("BENCHMARK", "openenv-moderation")
+SUCCESS_SCORE_THRESHOLD = 0.9
 
 
-def emit_log(event: str, payload: Dict[str, Any]) -> None:
-    print(f"[{event}] {json.dumps(payload, separators=(',', ':'))}", flush=True)
+def format_log_value(value: Any) -> str:
+    text = str(value).replace("\n", " ").replace("\r", " ")
+    return text if text else "null"
+
+
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={format_log_value(task)} env={format_log_value(env)} model={format_log_value(model)}", flush=True)
+
+
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val = format_log_value(error) if error else "null"
+    done_val = str(done).lower()
+    print(
+        f"[STEP] step={step} action={format_log_value(action)} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
+
+
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{reward:.2f}" for reward in rewards)
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
 
 
 # =========================
@@ -78,6 +100,10 @@ def sanitize(output: Dict[str, Any]) -> Dict[str, Any]:
         "severity": output.get("severity") if output.get("severity") in VALID_SEVERITY else "low",
         "decision": output.get("decision") if output.get("decision") in VALID_DECISION else "allow",
     }
+
+
+def action_to_str(action: Action) -> str:
+    return f"{action.label}:{action.severity}:{action.decision}"
 
 
 def local_policy(obs) -> Dict[str, Any]:
@@ -173,72 +199,69 @@ def call_model(prompt: str) -> str:
     return ""
 
 
-# =========================
-# RUN ONE EPISODE
-# =========================
-def run_episode(env, episode: int) -> float:
-    obs = env.reset()
-    done = False
-    final_score = 0.0
-    step = 0
-
-    while not done:
-        step += 1
-        prompt = build_prompt(obs)
-        response = call_model(prompt)
-        source = "llm" if response else "fallback"
-
-        if response:
-            parsed = sanitize(parse_json(response))
-        else:
-            parsed = local_policy(obs)
-
-        action = Action(**parsed)
-
-        obs, reward, done, _ = env.step(action)
-        final_score = reward.score
-        emit_log("STEP", {
-            "episode": episode,
-            "step": step,
-            "label": action.label,
-            "severity": action.severity,
-            "decision": action.decision,
-            "score": round(final_score, 4),
-            "done": done,
-            "source": source,
-        })
-
-    return final_score
-
-
-# =========================
 # MAIN
 # =========================
 def run():
     env = ModerationEnv()
-    scores = []
-    failed = 0
+    
+    total_score = 0.0
+    episodes = 6
+    
+    for episode in range(1, episodes + 1):
+        rewards: List[float] = []
+        steps_taken = 0
+        score = 0.0
+        success = False
 
-    emit_log("START", {
-        "episodes": EPISODES,
-        "model_name": MODEL_NAME or "",
-        "api_base_url": API_BASE_URL or "",
-        "model_configured": MODEL_CONFIGURED,
-    })
+        try:
+            obs = env.reset()
+            # Dynamically fetch the current randomly sampled task from state
+            task_id = env.state.current_task.get("id", TASK_NAME)
+            difficulty = env.state.current_task.get("difficulty", "unknown")
+            print(f"\n--- EPISODE {episode} | TASK: {task_id} ({difficulty.upper()}) ---")
+            log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
+            
+            done = False
 
-    for i in range(EPISODES):
-        score = run_episode(env, i + 1)
-        scores.append(score)
-        if score == 0.0:
-            failed += 1
+            for step in range(1, MAX_STEPS + 1):
+                if done:
+                    break
 
-    avg_score = sum(scores) / len(scores)
+                prompt = build_prompt(obs)
+                response = call_model(prompt)
 
-    emit_log("END", {
-        "episodes": EPISODES,
-        "average_score": round(avg_score, 4),
-        "failed": failed,
-    })
+                if response:
+                    parsed = sanitize(parse_json(response))
+                else:
+                    parsed = local_policy(obs)
+
+                action = Action(**parsed)
+                obs, reward, done, info = env.step(action)
+
+                step_reward = reward.score
+                error = info.get("last_action_error") if isinstance(info, dict) else None
+
+                rewards.append(step_reward)
+                steps_taken = step
+                score = max(0.0, min(step_reward, 1.0))
+                success = success or score >= SUCCESS_SCORE_THRESHOLD
+
+                log_step(step=step, action=action_to_str(action), reward=step_reward, done=done, error=error)
+
+                if done:
+                    break
+        finally:
+            log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+            total_score += score
+            
+    try:
+        close = getattr(env, "close", None)
+        if callable(close):
+            close()
+    except Exception:
+        pass
+        
+    print(f"\n[BASELINE] Average Score across {episodes} episodes: {total_score / episodes:.3f}", flush=True)
 
 
 if __name__ == "__main__":

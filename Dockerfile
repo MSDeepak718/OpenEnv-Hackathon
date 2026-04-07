@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir \
     "python-dotenv>=1.0.0" \
     "openenv>=0.1.13"
 
+ENV ENABLE_WEB_INTERFACE=true
 EXPOSE 7860
 
 CMD ["uvicorn", "api.server:app", "--host", "0.0.0.0", "--port", "7860"]

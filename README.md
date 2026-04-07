@@ -129,7 +129,7 @@ docker build -t openenv-moderation .
 docker run -p 7860:7860 \
   -e API_BASE_URL=https://api.groq.com/openai/v1 \
   -e MODEL_NAME=llama-3.3-70b-versatile \
-  -e HF_TOKEN=your_token_here \
+  -e API_KEY=your_token_here \
   openenv-moderation
 ```
 
@@ -141,7 +141,7 @@ Set the following **Secrets** in your HF Space settings:
 |---|---|
 | `API_BASE_URL` | `https://api.groq.com/openai/v1` |
 | `MODEL_NAME` | `llama-3.3-70b-versatile` |
-| `HF_TOKEN` | Your Groq API key |
+| `API_KEY` | Your Groq API key |
 
 ---
 

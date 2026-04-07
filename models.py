@@ -20,3 +20,9 @@ class StepResult(BaseModel):
     reward: Reward
     done: bool
     info: dict
+
+class State(BaseModel):
+    current_task: dict | None = None
+    step_count: int = 0
+    max_steps: int = 3
+    history: List[dict] = []

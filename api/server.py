@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
 from env.moderation_env import ModerationEnv
-from schemas import Action
+from models import Action
+from tasks.catalog import get_task_catalog
 
 app = FastAPI(title="OpenEnv Moderation API", version="1.0.0")
 env = ModerationEnv()
@@ -32,6 +32,21 @@ def state():
     return {"status": "running"}
 
 
+@app.get("/tasks")
+def tasks():
+    return {"tasks": get_task_catalog()}
+
+
+@app.get("/grader")
+def grader():
+    return {
+        "graders": [
+            {"task_id": task["id"], "grader": task["grader"]}
+            for task in get_task_catalog()
+        ]
+    }
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "healthy"}

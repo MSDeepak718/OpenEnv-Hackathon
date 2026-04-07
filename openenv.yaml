@@ -6,8 +6,30 @@ endpoints:
   reset: /reset
   step: /step
   state: /state
+  tasks: /tasks
+  grader: /grader
 
 models:
   observation: Observation
   action: Action
   reward: Reward
+
+tasks:
+  - id: easy_moderation
+    name: Easy Moderation
+    difficulty: easy
+    description: Classify explicit threats, clear toxicity, and obvious spam.
+    grader: tasks.grader.grade_easy
+    num_variants: 4
+  - id: medium_moderation
+    name: Medium Moderation
+    difficulty: medium
+    description: Distinguish venting and criticism from moderate toxicity and phishing-like spam.
+    grader: tasks.grader.grade_medium
+    num_variants: 4
+  - id: hard_moderation
+    name: Hard Moderation
+    difficulty: hard
+    description: Apply context-aware escalation to coded hate, harassment, and repeat spam.
+    grader: tasks.grader.grade_hard
+    num_variants: 4
