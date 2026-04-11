@@ -1,44 +1,81 @@
 ---
-title: OpenEnv Moderation
-emoji: 🛡️
+title: OpenEnv Incident Triage
+emoji: 🚨
 colorFrom: red
-colorTo: yellow
+colorTo: green
 sdk: docker
 pinned: false
 tags:
   - openenv
 ---
 
-# OpenEnv — AI Content Moderation Environment
+# OpenEnv — Incident Response Triage Environment
 
-An **OpenEnv-compatible** reinforcement learning environment where an LLM agent acts as an AI content moderator, classifying user-generated content and deciding on the appropriate enforcement action.
+An **OpenEnv-compatible** reinforcement learning environment where an LLM agent acts as a **Site Reliability Engineer (SRE)**, triaging production incidents by analyzing logs, metrics, alerts, and timelines to diagnose root causes and choose appropriate remediation actions.
 
-> Built for the OpenEnv Hackathon 
+Built using the `openenv-core` framework — inherits from `Environment`, uses `create_app()`, supports HTTP + WebSocket.
+
+> Built for the OpenEnv Hackathon
 
 ---
 
 ## Environment Description & Motivation
 
-Content moderation at scale is one of the hardest problems in platform safety. Human moderators are expensive and prone to fatigue; rule-based filters miss nuance. This environment challenges an LLM agent to **reason about context, user history, and intent** to make consistent, policy-aligned moderation decisions — mimicking real-world trust & safety workflows.
+**Incident response triage** is one of the most critical, high-stakes tasks in modern software operations. When production systems fail, SRE teams must rapidly:
+
+1. **Assess severity** — Is this a P1 total outage or a P4 minor issue?
+2. **Identify root cause** — Infrastructure failure? Security breach? Bad deploy?
+3. **Choose remediation** — Rollback, restart, scale up, or block the attacker?
+4. **Calibrate confidence** — Is the evidence conclusive or misleading?
+
+This environment simulates that workflow with **multi-step episodes** where new evidence is progressively revealed, forcing the agent to update its diagnosis as more information becomes available. Incidents feature realistic scenarios including cascading Redis failures, DDoS attacks masking data breaches, cryptominer deployments via compromised CI/CD pipelines, and epoch timestamp overflow bugs.
+
+**Why this domain?**
+- Every tech company runs 24/7 incident response — this is a real, unsolved problem
+- Requires multi-step reasoning, not just classification
+- Natural reward shaping — partial credit for correct triage even with wrong remediation
+- Hard tasks genuinely challenge frontier models with misleading signals
 
 ---
 
 ## Observation Space
 
-Each observation is a JSON object with three fields:
+Each observation provides the agent with progressive evidence about an incident:
 
 | Field | Type | Description |
 |---|---|---|
-| `content` | `string` | The user-generated message/post to be moderated |
-| `user_history` | `list[string]` | Previous violations or infractions by this user |
-| `previous_actions` | `list[string]` | Actions taken in prior steps of the current episode |
+| `incident_id` | `string` | Unique incident identifier |
+| `timestamp` | `string` | When the incident was detected |
+| `severity_indicator` | `string` | Initial severity (P1–P4) |
+| `title` | `string` | Incident title/summary |
+| `description` | `string` | Detailed incident description |
+| `affected_services` | `list[string]` | Services impacted |
+| `metrics` | `dict[string, list[float]]` | Time-series metrics (oldest → newest) |
+| `logs` | `list[LogEntry]` | Structured log entries with timestamps |
+| `alerts` | `list[Alert]` | Fired monitoring alerts |
+| `timeline` | `list[TimelineEvent]` | Chronological incident events |
+| `available_actions` | `list[string]` | Valid remediation actions |
+| `step_number` | `int` | Current step in the episode |
+| `max_steps` | `int` | Maximum steps allowed |
+| `done` | `bool` | Whether the episode is complete |
+| `reward` | `float` | Score for the last action (0.0–1.0) |
 
-**Example:**
+**Example (step 1):**
 ```json
 {
-  "content": "I'll find out where you live and make you regret this",
-  "user_history": ["previous warning"],
-  "previous_actions": []
+  "incident_id": "INC-1001",
+  "severity_indicator": "P1",
+  "title": "API Gateway — 100% 5xx After Deploy",
+  "affected_services": ["api-gateway", "web-frontend"],
+  "metrics": {"error_rate_pct": [2.0, 5.0, 98.0, 100.0]},
+  "logs": [
+    {"level": "FATAL", "service": "api-gateway", "message": "CrashLoopBackOff: 12 restarts"}
+  ],
+  "alerts": [
+    {"name": "HighErrorRate", "severity": "critical", "message": "error rate > 95%"}
+  ],
+  "done": false,
+  "reward": 0.0
 }
 ```
 
@@ -46,20 +83,26 @@ Each observation is a JSON object with three fields:
 
 ## Action Space
 
-The agent must return a JSON object with three fields:
+The agent must return a structured triage response:
 
 | Field | Type | Values |
 |---|---|---|
-| `label` | `string` | `safe` · `toxic` · `hate` · `spam` |
-| `severity` | `string` | `low` · `medium` · `high` |
-| `decision` | `string` | `allow` · `warn` · `remove` · `ban` |
+| `triage_priority` | `string` | `P1` (critical) · `P2` (high) · `P3` (medium) · `P4` (low) |
+| `root_cause_category` | `string` | `infrastructure` · `application` · `network` · `security` · `configuration` · `external` |
+| `diagnosis` | `string` | Free-text reasoning about the root cause |
+| `remediation` | `string` | `restart_service` · `scale_up` · `rollback_deploy` · `block_ip` · `update_config` · `failover` · `escalate` · `monitor` |
+| `escalate_to` | `string?` | Optional team name to escalate to |
+| `confidence` | `float` | Agent's confidence (0.0–1.0) |
 
 **Example:**
 ```json
 {
-  "label": "hate",
-  "severity": "high",
-  "decision": "ban"
+  "triage_priority": "P1",
+  "root_cause_category": "application",
+  "diagnosis": "CrashLoopBackOff caused by bad deploy v2.14",
+  "remediation": "rollback_deploy",
+  "escalate_to": null,
+  "confidence": 0.9
 }
 ```
 
@@ -67,24 +110,25 @@ The agent must return a JSON object with three fields:
 
 ## Task Descriptions
 
-| Difficulty | Content Type | History | Expected Challenge |
-|---|---|---|---|
-| **Easy** | Explicit threats, hate speech, clear spam | Prior violations (1+) | Direct policy violation — unambiguous |
-| **Medium** | Frustration expressions, mild toxicity, subtle spam | None or minimal | Distinguish venting vs. genuine toxicity |
-| **Hard** | Borderline hate speech, coded threats | Multiple strikes (3+) | Escalation logic + context-aware severity |
+| Difficulty | # Variants | Incident Types | Steps | Expected Challenge |
+|---|---|---|---|---|
+| **Easy** | 8 | Bad deploys, disk full, SSL expired, OOM, CDN outage, Redis crash, webhook misconfig, DNS failure | 1 | Clear signals — unambiguous root cause |
+| **Medium** | 8 | Slow DB queries, memory leaks, rate limiter misconfig, Kafka lag, cron failures, circuit breaker cascades, feature flag bugs, image pull failures | 1–2 | Requires correlating 2–3 signals |
+| **Hard** | 8 | DDoS masking breach, cascading Redis, network partition, cryptominer via CI/CD, replication drift, canary poisoning, epoch overflow, Terraform state corruption | 2–3 | Misleading initial signals, progressive evidence revelation |
 
-Each difficulty has **4 randomized task variants** sampled per episode.
+### Scoring (5-component grading)
 
-### Scoring (per episode)
+| Component | Weight | Scoring |
+|---|---|---|
+| Triage Priority | 15–25% | Exact = 100%, off-by-1 = 50%, off-by-2+ = 0% |
+| Root Cause Category | 25–30% | Exact = 100%, related = 40%, wrong = 0% |
+| Remediation | 25–30% | Exact = 100%, partial = 50%, harmful = **−15% penalty** |
+| Confidence Calibration | 10% | Rewards accurate self-assessment |
+| Diagnosis Quality | 15% | Keyword matching against expected reasoning |
 
-| Match | Points |
-|---|---|
-| Correct `label` | **+0.3** |
-| Correct `severity` | **+0.3** |
-| Correct `decision` | **+0.4** |
-| `ban` required but `allow` given | **−0.5** (clamped to 0) |
+**Penalties:** `−0.15` harmful remediation, `−0.05` overconfident wrong answer
 
-Score range: `0.0` (complete miss) → `1.0` (perfect match)
+Score range: `0.01` → `0.99`
 
 ---
 
@@ -92,70 +136,60 @@ Score range: `0.0` (complete miss) → `1.0` (perfect match)
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/reset` | Reset episode, returns first `Observation` |
-| `POST` | `/step` | Submit `Action`, returns `Observation + Reward + done` |
-| `GET` | `/state` | Environment status |
-| `GET` | `/health` | Health check (returns 200) |
+| `POST` | `/reset` | Reset episode, returns initial `Observation` |
+| `POST` | `/step` | Submit `Action`, returns `Observation + reward + done` |
+| `GET` | `/state` | Episode state (episode_id, step_count) |
+| `GET` | `/schema` | JSON schemas for action/observation/state |
+| `GET` | `/metadata` | Environment metadata and README |
+| `GET` | `/health` | Health check |
+| `WS` | `/ws` | WebSocket for persistent sessions |
 
 ---
 
 ## Setup & Usage
 
-### Local (via `.venv`)
+### Local
 
 ```bash
-# Install dependencies
-pip install uv
-uv sync
-
-# Set environment variables
-cp .env.example .env
-# Edit .env with your API key
-
-# Run the API server
-uvicorn api.server:app --host 0.0.0.0 --port 7860
-
-# Run inference agent
+pip install uv && uv sync
+cp .env.example .env  # Edit with your API credentials
+uvicorn server.app:app --host 0.0.0.0 --port 7860
 python inference.py
 ```
 
 ### Docker
 
 ```bash
-# Build
-docker build -t openenv-moderation .
-
-# Run (inject env vars)
+docker build -t openenv-incident-triage .
 docker run -p 7860:7860 \
-  -e API_BASE_URL=https://api.groq.com/openai/v1 \
-  -e MODEL_NAME=llama-3.3-70b-versatile \
-  -e API_KEY=your_token_here \
-  openenv-moderation
+  -e API_BASE_URL=https://api.openai.com/v1 \
+  -e MODEL_NAME=gpt-4o \
+  -e HF_TOKEN=your_token_here \
+  openenv-incident-triage
 ```
 
-### HF Space Secrets
+### Environment Variables
 
-Set the following **Secrets** in your HF Space settings:
-
-| Key | Value |
+| Key | Description |
 |---|---|
-| `API_BASE_URL` | `https://api.groq.com/openai/v1` |
-| `MODEL_NAME` | `llama-3.3-70b-versatile` |
-| `API_KEY` | Your Groq API key |
+| `API_BASE_URL` | LLM API endpoint |
+| `MODEL_NAME` | Model identifier |
+| `HF_TOKEN` | API key |
 
 ---
 
 ## Baseline Scores
 
-Tested with `llama-3.3-70b-versatile` via Groq API (5 episodes):
+Local fallback policy (deterministic, no LLM):
 
-| Run | Ep 1 | Ep 2 | Ep 3 | Ep 4 | Ep 5 | **Avg** |
-|---|---|---|---|---|---|---|
-| Run 1 | 1.000 | 0.700 | 0.700 | 1.000 | 1.000 | **0.880** |
-| Run 2 | 0.700 | 0.700 | 0.700 | 1.000 | 1.000 | **0.820** |
-| Run 3 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | **1.000** |
+| Difficulty | Avg Score |
+|---|---|
+| Easy | ~0.70 |
+| Medium | ~0.45 |
+| Hard | ~0.25 |
+| **Overall** | **~0.47** |
 
-> Typical baseline: **0.82 – 1.00** depending on Groq API rate limits.
+With LLM (via API): **~0.90** average
 
 ---
 
@@ -163,20 +197,28 @@ Tested with `llama-3.3-70b-versatile` via Groq API (5 episodes):
 
 ```
 .
-├── api/
-│   └── server.py          # FastAPI server (OpenEnv endpoints)
+├── server/
+│   ├── __init__.py        # Module re-export
+│   └── app.py             # FastAPI app via OpenEnv create_app()
 ├── env/
-│   └── moderation_env.py  # RL environment (reset / step)
+│   ├── incident_env.py    # Environment (inherits from openenv Environment)
+│   └── evidence.py        # Progressive evidence revelation engine
 ├── tasks/
-│   ├── easy.py            # 4 easy task variants
-│   ├── medium.py          # 4 medium task variants
-│   ├── hard.py            # 4 hard task variants
-│   └── grader.py          # Reward / scoring logic
-├── schemas.py             # Pydantic models: Observation, Action, Reward
-├── inference.py           # LLM agent runner
-├── openenv.yaml           # OpenEnv spec config
-├── Dockerfile             # Container definition
-└── pyproject.toml         # Python project & dependencies
+│   ├── easy.py            # 8 easy incident variants
+│   ├── medium.py          # 8 medium incident variants
+│   ├── hard.py            # 8 hard incident variants
+│   ├── grader.py          # 5-component continuous grading system
+│   └── catalog.py         # Task catalog registry
+├── api/
+│   └── server.py          # Fallback API server
+├── models.py              # Pydantic models (extends openenv Action/Observation)
+├── client.py              # EnvClient for WebSocket connections
+├── __init__.py            # Package exports
+├── inference.py           # LLM agent runner (OpenAI Client)
+├── openenv.yaml           # OpenEnv spec manifest (spec_version: 1)
+├── Dockerfile             # Container with HEALTHCHECK
+├── pyproject.toml         # Dependencies & build config
+└── validate.sh            # Pre-submission validator
 ```
 
 ---
@@ -184,15 +226,10 @@ Tested with `llama-3.3-70b-versatile` via Groq API (5 episodes):
 ## OpenEnv Config (`openenv.yaml`)
 
 ```yaml
-name: moderation-env
-description: AI Content Moderation Environment
-version: 1.0
-endpoints:
-  reset: /reset
-  step: /step
-  state: /state
-models:
-  observation: Observation
-  action: Action
-  reward: Reward
+spec_version: 1
+name: incident_triage
+type: space
+runtime: fastapi
+app: server.app:app
+port: 7860
 ```

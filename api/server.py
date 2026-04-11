@@ -1,10 +1,16 @@
+"""
+Fallback API server for the Incident Response Triage Environment.
+
+Used when the OpenEnv core create_app is not available or for direct
+endpoint testing. The primary server is in server/app.py.
+"""
 from fastapi import FastAPI, HTTPException
-from env.moderation_env import ModerationEnv
-from models import Action
+from env.incident_env import IncidentTriageEnvironment
+from models import IncidentTriageAction
 from tasks.catalog import get_task_catalog
 
-app = FastAPI(title="OpenEnv Moderation API", version="1.0.0")
-env = ModerationEnv()
+app = FastAPI(title="OpenEnv Incident Response Triage API", version="1.0.0")
+env = IncidentTriageEnvironment()
 
 
 @app.post("/reset")
@@ -14,14 +20,14 @@ def reset():
 
 
 @app.post("/step")
-def step(action: Action):
+def step(action: IncidentTriageAction):
     try:
-        obs, reward, done, info = env.step(action)
+        obs = env.step(action)
         return {
             "observation": obs.model_dump(),
-            "reward": reward.model_dump(),
-            "done": done,
-            "info": info,
+            "reward": obs.reward,
+            "done": obs.done,
+            "info": {},
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -29,7 +35,8 @@ def step(action: Action):
 
 @app.get("/state")
 def state():
-    return {"status": "running"}
+    s = env.state
+    return {"episode_id": s.episode_id, "step_count": s.step_count}
 
 
 @app.get("/tasks")

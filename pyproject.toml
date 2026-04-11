@@ -1,7 +1,11 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "openenv-hackathon"
+name = "openenv-incident-triage"
 version = "0.1.0"
-description = "Add your description here"
+description = "Incident Response Triage environment for OpenEnv — SRE workflow simulation"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -10,9 +14,19 @@ dependencies = [
     "openai>=1.0.0",
     "pydantic>=2.0.0",
     "python-dotenv>=1.0.0",
-    "openenv>=0.1.13",
+    "websockets>=12.0",
     "openenv-core>=0.2.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
 ]
 
 [project.scripts]
 server = "server.app:main"
+
+[tool.setuptools]
+include-package-data = true
+packages = ["server", "env", "tasks", "api"]
